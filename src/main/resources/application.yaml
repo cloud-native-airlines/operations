@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/operations}
+    username: ${DB_USER:operations}
+    password: ${DB_PASSWORD:operations}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: true
+
+operations:
+  schedule:
+    horizon-days: 7
+  simulator:
+    base-url: ${SIMULATOR_URL:http://simulator:8000}
