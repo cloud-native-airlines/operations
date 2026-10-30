@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CNA Operations</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #181b21;
+      --ink: #e8eaed;
+      --muted: #9aa0aa;
+      --accent: #3b82f6;
+      --border: #272b33;
+      --ok: #22c55e;
+      --paused: #f59e0b;
+      --row: #1f232b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      padding: 24px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+    h1 .sub { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+    .clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+    .clock b { color: var(--ink); }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
+    h3 { font-size: 12px; color: var(--muted); margin: 16px 0 6px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    th, td { text-align: left; padding: 8px 12px; font-variant-numeric: tabular-nums; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--border); }
+    tr + tr td { border-top: 1px solid var(--border); }
+    tbody tr:hover { background: var(--row); }
+    .mono { font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge.flying { background: rgba(34,197,94,.15); color: var(--ok); }
+    .badge.at_airport { background: rgba(148,163,184,.15); color: var(--muted); }
+    .badge.unknown { background: rgba(245,158,11,.15); color: var(--paused); }
+    .status-scheduled { color: var(--muted); }
+    .status-departed { color: var(--ok); }
+    .status-arrived { color: var(--ink); }
+    .src { font-size: 11px; color: var(--muted); margin-left: 6px; }
+    .route-arrow { color: var(--muted); padding: 0 4px; }
+    .active-block { border: 1px solid var(--accent); border-radius: 10px; }
+    .pager { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .pager button {
+      font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--ink); padding: 5px 12px;
+    }
+    .pager button:hover:not(:disabled) { border-color: var(--accent); }
+    .pager button:disabled { opacity: .4; cursor: default; }
+    .pager .page-label { color: var(--muted); font-size: 12px; }
+    .empty { color: var(--muted); padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+    .error { color: var(--paused); margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cloud Native Airlines <span class="sub">Operations</span></h1>
+    <div class="clock" id="clock">—</div>
+  </header>
+  <div class="error" id="error" hidden></div>
+
+  <h2>Fleet</h2>
+  <div id="fleet"></div>
+
+  <h2>Schedule</h2>
+
+  <h3>Previous flights</h3>
+  <div class="pager">
+    <button id="prev-newer">↑ Newer</button>
+    <button id="prev-older">↓ Older</button>
+    <span class="page-label" id="prev-label"></span>
+  </div>
+  <div id="previous"></div>
+
+  <h3>Active flights</h3>
+  <div id="active"></div>
+
+  <h3>Upcoming flights</h3>
+  <div class="pager">
+    <button id="next-earlier">↑ Earlier</button>
+    <button id="next-later">↓ Later</button>
+    <span class="page-label" id="next-label"></span>
+  </div>
+  <div id="next"></div>
+
+  <script>
+    const PAGE = 8;
+    const REFRESH_MS = 5000;
+
+    let now = null;            // Date, simulated time
+    let runId = null;
+    let flights = [];          // the run's flight instances
+    let prevPage = 0;          // 0 = most recent page of past flights
+    let nextPage = 0;          // 0 = soonest page of upcoming flights
+
+    const $ = (id) => document.getElementById(id);
+
+    async function getJSON(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(url + " -> " + res.status);
+      return res.json();
+    }
+
+    function fmt(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+    }
+    function fmtClock(d) {
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+    }
+    const esc = encodeURIComponent;
+
+    function locationText(loc) {
+      if (!loc || loc.state === "unknown") return `<span class="badge unknown">unknown</span>`;
+      const src = loc.source ? `<span class="src">via ${loc.source}</span>` : "";
+      if (loc.state === "flying" && loc.flight) {
+        const f = loc.flight;
+        return `<span class="badge flying">flying</span> ${f.flight_number}
+          <span class="muted">${f.origin}<span class="route-arrow">→</span>${f.destination}</span>${src}`;
+      }
+      return `<span class="badge at_airport">at airport</span> ${loc.airport ?? "—"}${src}`;
+    }
+
+    function renderFleet(aircraft) {
+      if (!aircraft.length) { $("fleet").innerHTML = `<div class="empty">No aircraft.</div>`; return; }
+      const rows = aircraft.map((a) => `
+        <tr>
+          <td><b>${a.id}</b></td>
+          <td class="muted">${a.type}</td>
+          <td class="muted">${a.base_airport_code}</td>
+          <td>${locationText(a.location)}</td>
+        </tr>`).join("");
+      $("fleet").innerHTML = `
+        <table>
+          <thead><tr><th>Aircraft</th><th>Type</th><th>Base</th><th>Current location</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    function flightRows(list) {
+      return list.map((f) => `
+        <tr>
+          <td><b>${f.flight_number}</b></td>
+          <td>${f.origin_code}<span class="route-arrow">→</span>${f.destination_code}</td>
+          <td class="muted">${f.aircraft_id}</td>
+          <td class="mono">${fmt(f.scheduled_departure)}</td>
+          <td class="mono">${fmt(f.scheduled_arrival)}</td>
+          <td class="status-${f.status}">${f.status}</td>
+        </tr>`).join("");
+    }
+    function flightTable(list, emptyText) {
+      if (!list.length) return `<div class="empty">${emptyText}</div>`;
+      return `<table>
+        <thead><tr><th>Flight</th><th>Route</th><th>Aircraft</th><th>Dep (sched)</th><th>Arr (sched)</th><th>Status</th></tr></thead>
+        <tbody>${flightRows(list)}</tbody></table>`;
+    }
+
+    function classify() {
+      const t = now.getTime();
+      const past = [], active = [], future = [];
+      for (const f of flights) {
+        const dep = new Date(f.scheduled_departure).getTime();
+        const arr = new Date(f.scheduled_arrival).getTime();
+        if (arr <= t) past.push(f);
+        else if (dep <= t) active.push(f);
+        else future.push(f);
+      }
+      past.sort((a, b) => new Date(b.scheduled_departure) - new Date(a.scheduled_departure)); // most recent first
+      active.sort((a, b) => new Date(a.scheduled_departure) - new Date(b.scheduled_departure));
+      future.sort((a, b) => new Date(a.scheduled_departure) - new Date(b.scheduled_departure)); // soonest first
+      return { past, active, future };
+    }
+
+    function renderSchedule() {
+      const { past, active, future } = classify();
+
+      const prevPages = Math.max(1, Math.ceil(past.length / PAGE));
+      prevPage = Math.min(prevPage, prevPages - 1);
+      const prevSlice = past.slice(prevPage * PAGE, prevPage * PAGE + PAGE);
+      $("previous").innerHTML = flightTable(prevSlice, "No earlier flights.");
+      $("prev-label").textContent = past.length ? `page ${prevPage + 1} / ${prevPages} (${past.length} flights)` : "";
+      $("prev-newer").disabled = prevPage === 0;
+      $("prev-older").disabled = prevPage >= prevPages - 1;
+
+      $("active").innerHTML = active.length
+        ? `<div class="active-block">${flightTable(active, "")}</div>`
+        : `<div class="empty">No active flights right now.</div>`;
+
+      const nextPages = Math.max(1, Math.ceil(future.length / PAGE));
+      nextPage = Math.min(nextPage, nextPages - 1);
+      const nextSlice = future.slice(nextPage * PAGE, nextPage * PAGE + PAGE);
+      $("next").innerHTML = flightTable(nextSlice, "No upcoming flights.");
+      $("next-label").textContent = future.length ? `page ${nextPage + 1} / ${nextPages} (${future.length} flights)` : "";
+      $("next-earlier").disabled = nextPage === 0;
+      $("next-later").disabled = nextPage >= nextPages - 1;
+    }
+
+    async function refresh() {
+      try {
+        const ctx = await getJSON("/api/v1/context");
+        runId = ctx.run_id;
+        now = new Date(ctx.simulated_at);
+        $("clock").innerHTML = `Simulated <b>${fmtClock(now)}</b> UTC &middot; run <span class="mono">${runId}</span>`;
+        $("error").hidden = true;
+
+        const [fleet, sched] = await Promise.all([
+          getJSON(`/api/v1/aircraft?run_id=${esc(runId)}&at=${esc(ctx.simulated_at)}`),
+          getJSON(`/api/v1/flights?run_id=${esc(runId)}`),
+        ]);
+        renderFleet(fleet.aircraft);
+        flights = sched.flights;
+        renderSchedule();
+      } catch (err) {
+        $("error").hidden = false;
+        $("error").textContent = "Could not load Operations data: " + err.message +
+          " (is a run initialized and the Simulator reachable?)";
+      }
+    }
+
+    $("prev-newer").addEventListener("click", () => { if (prevPage > 0) { prevPage--; renderSchedule(); } });
+    $("prev-older").addEventListener("click", () => { prevPage++; renderSchedule(); });
+    $("next-earlier").addEventListener("click", () => { if (nextPage > 0) { nextPage--; renderSchedule(); } });
+    $("next-later").addEventListener("click", () => { nextPage++; renderSchedule(); });
+
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  </script>
+</body>
+</html>
